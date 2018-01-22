@@ -49,6 +49,14 @@ sensors.obj: ../clk.h
 sensors.obj: ../systick.h
 sensors.obj: ../uart.h
 sensors.obj: ../sensors.h
+sensors.obj: ../adc.h
+sensors.obj: ../HR_RR_Algorithm.h
+sensors.obj: ../msp432_spi.h
+sensors.obj: ../adxl345.h
+sensors.obj: ../I2C0.h
+sensors.obj: ../MAX30102.h
+sensors.obj: ../I2C1.h
+sensors.obj: ../bme280_sensor.h
 
 ../sensors.c: 
 C:/ti/ccsv7/tools/compiler/ti-cgt-arm_16.9.4.LTS/include/stdio.h: 
@@ -99,3 +107,11 @@ C:/ti/msp/MSP432Ware_3_50_00_02/driverlib/driverlib/MSP432P4xx/wdt_a.h:
 ../systick.h: 
 ../uart.h: 
 ../sensors.h: 
+../adc.h: 
+../HR_RR_Algorithm.h: 
+../msp432_spi.h: 
+../adxl345.h: 
+../I2C0.h: 
+../MAX30102.h: 
+../I2C1.h: 
+../bme280_sensor.h: 

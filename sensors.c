@@ -15,14 +15,15 @@
 #include "systick.h"
 #include "uart.h"
 #include "sensors.h"
-
-/* Variable declarations related to Bluetooth */
-//char g_rx_buff[RX_BUFF_SIZE];
-//uint8_t g_ms_timeout = 0;
-//uint32_t g_check_connection_count = 0;
-//uint32_t g_data_send_interval_count = 0;
-//uint8_t g_ble_connect_state = 0;
-//_E_BLE_STATE g_ble_state = BLE_IDLE;
+#include "adc.h"
+#include "HR_RR_Algorithm.h"
+#include "msp432_spi.h"
+#include "adxl345.h"
+#include "I2C0.h"
+#include "MAX30102.h"
+#include "I2C1.h"
+#include "bme280_sensor.h"
+/******************************************************** BLUETOOTH ***********************************************************/
 
 /* Function to reset buffer for bluetooth */
 void reset_rx_buffer(char *buff){
@@ -95,6 +96,7 @@ int8_t ble_send_data(char *buff,_S_SENSOR_DATA * data){
         }
         SEND_CMD("AT+BLEUARTTX=");
         SEND_CMD(ble_buff);
+        //__delay_cycles(320000);
         systick_delay_ms(BLE_DELAY_MS);
         i++;
         /* Check for OK response after Bluetooth data is sent */
@@ -128,6 +130,7 @@ int8_t ble_check_connection(char *buff){
         }
         SEND_CMD("AT+GAPGETCONN\r\n");
         systick_delay_ms(BLE_DELAY_MS);
+        //__delay_cycles(320000);
         i++;
     }while(check_response(buff,"OK\r\n")!=1);/* Wait until OK is found */
     /* if 1 found with OK, device is connected */
@@ -137,6 +140,168 @@ int8_t ble_check_connection(char *buff){
         return 0;
     }
 }
+/*************************************************** END OF BLUETOOTH *********************************************************************/
+
+/*************************************************** RESPIRATORY RATE and HEART RATE ***********************************************************/
+/* Global Variable declarations for Respiratory rate */
+double g_rr_temp_buff[RR_BUF_SIZE]={0.0};
+double g_rr_filter_values[RR_BUF_SIZE]={0.0};
+
+/* Global Variable declarations for Heart rate */
+double g_hr_temp_buff[RR_BUF_SIZE]={0.0};
+double g_hr_filter_values[RR_BUF_SIZE]={0.0};
+
+/* Function to calculate Respiratory Rate from Samples */
+uint16_t calculate_RR(double *samples){
+    double threshold= 0;
+    int16_t peaks = 0;
+    /* Find Mean */
+    double avg = find_mean(samples);
+    /* Find difference of mean to remove DC offset */
+    diff_from_mean(samples,g_rr_temp_buff,avg);
+    /* 4 point Moving Average to smoothen the signal */
+    four_pt_MA(g_rr_temp_buff);
+    /* 6th order Butterworth low pass filter with center frequency 2Hz */
+    ButterworthLowpassFilter0100SixthOrder(g_rr_temp_buff,g_rr_filter_values,RR_BUF_SIZE-MA4_SIZE+1);
+    /* Calculate threshold */
+    threshold = threshold_calc(g_rr_filter_values) * 0.7;
+    /* Calculate Number of peaks */
+    peaks= myPeakCounter(g_rr_filter_values,RR_BUF_SIZE-MA4_SIZE+1,threshold);
+    //printf("BR Peaks = %d, ",peaks);
+    /* Extrapolate data to get per min value */
+    return (60/RR_INITIAL_FRAME_TIME_S) * peaks;
+}
+
+/* Function to calculate Heart Rate from Samples */
+uint16_t calculate_HR(double *samples){
+    double threshold= 0;
+    int16_t peaks = 0;
+    /* Find Mean */
+    double avg = find_mean(samples);
+    /* Find Difference from Mean to remove DC offset */
+    diff_from_mean(samples,g_hr_temp_buff,avg);
+    /* 4 point moving average to smoothen the signal */
+    four_pt_MA(g_hr_temp_buff);
+    /* 6th order Butterworth low pass filter with center frequency 2Hz */
+    ButterworthLowpassFilter0100SixthOrder(g_hr_temp_buff,g_hr_filter_values,RR_BUF_SIZE-MA4_SIZE+1);
+    /* Calculate threshold */
+    threshold = threshold_calc(g_hr_filter_values) * 0.7;
+    /* Calculate Number of peaks */
+    peaks= myPeakCounter(g_hr_filter_values,RR_BUF_SIZE-MA4_SIZE+1,threshold);
+    //printf(" HR Peaks = %d, ",peaks);
+    /* Extrapolate data to get per min value */
+    return (60/RR_INITIAL_FRAME_TIME_S) * peaks;
+
+}
+/*************************************************** END OF RESPIRATORY RATE and HEART RATE ***********************************************************/
+
+/*************************************************** PULSE OXIMETRY  ***********************************************************/
 
 
+/* Function to Initialize Pulse Oximetry Sensor */
+void maxrefdes117_init(){
+    uint8_t id = 0xff;
+    uint8_t uch_dummy;
 
+    /* Select Port 6 for I2C - Set Pin 4, 5 to input Primary Module Function,
+     *   (UCB1SIMO/UCB1SDA, UCB1SOMI/UCB1SCL).
+     */
+    MAP_GPIO_setAsPeripheralModuleFunctionInputPin(GPIO_PORT_P6,
+            GPIO_PIN4 + GPIO_PIN5, GPIO_PRIMARY_MODULE_FUNCTION);
+
+    GPIO_setAsInputPinWithPullUpResistor(MAX30102_INT_PORT, MAX30102_INT_PIN);
+    GPIO_interruptEdgeSelect(MAX30102_INT_PORT, MAX30102_INT_PIN,GPIO_HIGH_TO_LOW_TRANSITION);
+    MAP_GPIO_clearInterruptFlag(MAX30102_INT_PORT, MAX30102_INT_PIN);
+    MAP_GPIO_enableInterrupt(MAX30102_INT_PORT, MAX30102_INT_PIN);
+    MAP_Interrupt_enableInterrupt(INT_PORT4);
+    /* Initialize I2C0 */
+    I2C0_Init();
+    printf("Program started!\r\n");
+    /* Read Device ID. Device ID is 0x15 */
+    I2C0_bus_read(0x57, 0xff, &id, 1);
+    printf("id = 0x%x\r\n",id);
+
+    maxim_max30102_reset(); //resets the MAX30102
+    //read and clear status register
+    maxim_max30102_read_reg(0,&uch_dummy);
+    maxim_max30102_init();  //initializes the MAX30102
+}
+/*************************************************** END OF PULSE OXIMETRY  ***********************************************************/
+
+
+/*************************************************** ACCELEROMETER *****************************************************************/
+/* Function absolute value */
+__inline static float absFloat(float x){
+    if(x < 0){
+        return -x;
+    }
+    return x;
+}
+void accel_init(){
+    uint8_t readValue = 0;
+    /* read DeviceID of the Accelereomter. The DeviceID is 0xE5 */
+    readValue = r_reg(0x00);
+    printf("device id = 0x%x\r\n",readValue);
+    /* Power on the accelerometer */
+    ADXL345_powerOn();
+    /* Set Acceleromter Range to 16G */
+    ADXL345_setRange(ADXL345_RANGE_16_G);
+    /* Set Accelerometer Data rate to 400Hz */
+    ADXL345_setDataRate(ADXL345_DATARATE_400_HZ);
+}
+/* Function to check orientation based on x,y,z coordinates */
+__inline static void checkOrientation(_S_SENSOR_DATA *buff, float x, float y,float z){
+   const float zUpThreshold = 0.7;
+   const float xLeftThreshold = 0.5;
+   const float xRightThreshold = -0.5;
+   const float yUpRightThreshold = 0.7;
+   const float zDownThreshold = -0.6;
+    if(z > zUpThreshold){
+        strcpy(buff->accel_buf,"UP");
+    }else if(z < zDownThreshold){
+        strcpy(buff->accel_buf,"DOWN");
+    }
+    else if ((z < zUpThreshold) && (x> xLeftThreshold)){
+        strcpy(buff->accel_buf,"LEFT");
+    }else if ((z < zUpThreshold) && (x< xRightThreshold)){
+        strcpy(buff->accel_buf,"RIGHT");
+    }else if(absFloat(y) > yUpRightThreshold  ){
+        strcpy(buff->accel_buf,"UPRIGHT");
+    }
+}
+void update_accel_params(_S_SENSOR_DATA *buff){
+    float a,b,c;
+    //static float x_avg = 0.0,y_avg = 0.0,z_avg = 0.0;
+    //static uint8_t n_samples = 0;
+    //lis3dh_readNormalizedData(&a,&b,&c);
+    ADXL345_readNormalizedAccel(&a,&b,&c);
+    checkOrientation(buff,a,b,c);
+//    if((a <= 1.0 && a>= -1.0) && (b <= 1.0 && b >= -1.0) && (c <= 1.0 && c >= -1.0)){
+//        x_avg += a;
+//        y_avg += b;
+//        z_avg += c;
+//        if(++n_samples == N_ACCEL_SAMPLES){
+//            x_avg = x_avg/N_ACCEL_SAMPLES;
+//            y_avg = y_avg/N_ACCEL_SAMPLES;
+//            z_avg = z_avg/N_ACCEL_SAMPLES;
+//            checkOrientation(buff,x_avg,y_avg,z_avg);
+//            //printf("Normalized:x = %.2f, y = %.2f, z = %.2f\r\n",g_sensor_data.xpos,g_sensor_data.ypos,g_sensor_data.zpos);
+//            n_samples = 0;
+//            x_avg = 0;
+//            y_avg = 0;
+//            z_avg = 0;
+//
+//        }
+//    }
+}
+/*************************************************** END OF ACCELEROMETER  ***********************************************************/
+/*************************************************** TEMPERATURE SENSOR  *****************************************************************/
+/* Variable declarations for BME280 */
+_S_BME280_DATA bme280_data = {-999.9,-999.9,-999.9,-999.9};
+void update_temp_value(_S_SENSOR_DATA *buff){
+    get_bme280_values(&bme280_data.temperature_c,&bme280_data.pressure,&bme280_data.humidity);
+    bme280_data.temperature_f = bme280_data.temperature_c * 1.8 + 32; /*T(°F) = T(°C) × 1.8 + 32*/
+    buff->temp_f =bme280_data.temperature_f;
+    //printf("MAIN: tempC=%.2f C,tempF = %.2f F\r\n",bme280_data.temperature_c,bme280_data.temperature_f);
+}
+/*************************************************** END OF TEMPERATURE SENSOR  *****************************************************************/

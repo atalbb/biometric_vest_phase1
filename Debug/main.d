@@ -49,6 +49,11 @@ main.obj: ../clk.h
 main.obj: ../systick.h
 main.obj: ../uart.h
 main.obj: ../sensors.h
+main.obj: ../adc.h
+main.obj: ../algorithm.h
+main.obj: ../HR_RR_Algorithm.h
+main.obj: ../MAX30102.h
+main.obj: ../bme280_sensor.h
 
 ../main.c: 
 C:/ti/ccsv7/tools/compiler/ti-cgt-arm_16.9.4.LTS/include/stdio.h: 
@@ -99,3 +104,8 @@ C:/ti/msp/MSP432Ware_3_50_00_02/driverlib/driverlib/MSP432P4xx/wdt_a.h:
 ../systick.h: 
 ../uart.h: 
 ../sensors.h: 
+../adc.h: 
+../algorithm.h: 
+../HR_RR_Algorithm.h: 
+../MAX30102.h: 
+../bme280_sensor.h: 
